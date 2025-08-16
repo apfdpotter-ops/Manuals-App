@@ -66,12 +66,18 @@ async function listAllFiles(drive, folderId, prefix = '') {
   return items;
 }
 
-async function downloadFileBytes(drive, fileId) {
-  const res = await drive.files.get(
-    { fileId, alt: 'media' },
-    { responseType: 'arraybuffer' }
-  );
-  return Buffer.from(res.data);
+ async function downloadFileBytes(drive, fileId) {
+  try {
+    const res = await drive.files.get(
+      { fileId, alt: 'media' },
+      { responseType: 'arraybuffer' }
+    );
+    const buf = Buffer.from(res.data || []);
+    return buf;
+  } catch (e) {
+    console.error('Download failed for fileId', fileId, e.message);
+    return null; // let caller skip it
+  }
 }
 
 function md5(buffer) {
@@ -115,6 +121,10 @@ async function run() {
     files_scanned++;
 
     const buf = await downloadFileBytes(drive, f.id);
+    if (!buf || !Buffer.isBuffer(buf) || buf.length === 0) {
+    console.warn('Skipping (no bytes):', f.name, f.mimeType);
+    continue;
+    }
     const sum = md5(buf);
     const ext = mime.extension(f.mimeType) || f.name.split('.').pop() || 'bin';
     const storagePath = f.path;
@@ -142,16 +152,16 @@ async function run() {
     let pages = null;
     let parsed_ok = false;
 
-    if ((f.mimeType && f.mimeType.includes('pdf')) || /\.pdf$/i.test(f.name)) {
-      try {
-        const parsed = await parsePdf(buf);
-        extracted_text = parsed.text;
-        pages = parsed.pages;
-        parsed_ok = true;
-      } catch {
-        parsed_ok = false;
-      }
-    }
+    if (((f.mimeType || '').includes('pdf')) || /\.pdf$/i.test(f.name)) {
+       try {
+         const parsed = await parsePdf(buf);
+         extracted_text = parsed.text;
+         pages = parsed.pages;
+         parsed_ok = true;
+       } catch {
+         parsed_ok = false;
+       }
+     }
 
     const json = {
       category,
