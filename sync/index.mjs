@@ -1,52 +1,42 @@
-// --- Sync Google Drive -> Supabase (Manuals) ---
-// Parsing disabled for now; we mirror files + upsert rows with debug logs.
-
-import { GoogleAuth } from 'google-auth-library';
+// --- imports ---
 import { google } from 'googleapis';
 import { createClient } from '@supabase/supabase-js';
-import CryptoJS from 'crypto-js';
 import mime from 'mime-types';
+import crypto from 'node:crypto';
 
-console.log('SYNC BUILD tag: debug-logs-v1');
+// ---- tiny helpers ----
+const die = (msg) => { console.error(msg); process.exit(1); };
+const md5 = (buf) => crypto.createHash('md5').update(buf).digest('hex');
+const now = () => new Date().toISOString();
 
-// -------- Env checks --------
-const {
-  SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY,
-  DRIVE_ROOT_FOLDER_ID,
-  GOOGLE_SERVICE_ACCOUNT_JSON
-  const MAX_UPLOAD_BYTES = parseInt(
-  process.env.MAX_UPLOAD_BYTES || '52428800', // 50MB default
-  10
-);
-} = process.env;
-function showSupabaseKeyRole(jwt) {
-  try {
-    const payload = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64').toString());
-    console.log('SUPABASE KEY ROLE:', payload.role, 'iss:', payload.iss || '(n/a)');
-  } catch (e) {
-    console.log('Could not decode SUPABASE key payload');
-  }
-}
-showSupabaseKeyRole(SUPABASE_SERVICE_ROLE_KEY);
+// --- env ---
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const GOOGLE_SERVICE_ACCOUNT_JSON = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+const GOOGLE_DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID;
+const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || 'manuals';
+const MAX_UPLOAD_BYTES = parseInt(process.env.MAX_UPLOAD_BYTES || '52428800', 10); // 50MB
 
-function die(msg) {
-  console.error('FATAL:', msg);
-  process.exit(1);
-}
 if (!SUPABASE_URL) die('SUPABASE_URL is missing');
 if (!SUPABASE_SERVICE_ROLE_KEY) die('SUPABASE_SERVICE_ROLE_KEY is missing');
-if (!DRIVE_ROOT_FOLDER_ID) die('DRIVE_ROOT_FOLDER_ID is missing');
 if (!GOOGLE_SERVICE_ACCOUNT_JSON) die('GOOGLE_SERVICE_ACCOUNT_JSON is missing');
+if (!GOOGLE_DRIVE_FOLDER_ID) die('GOOGLE_DRIVE_FOLDER_ID is missing');
 
-console.log('Env OK. Starting sync…');
+// --- clients ---
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-// -------- Clients --------
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-  auth: { persistSession: false }
-});
+// Try to decode the JWT just for a friendly debug line (will always fail if accidentally a URL)
+try {
+  const parts = SUPABASE_SERVICE_ROLE_KEY.split('.');
+  const payload = JSON.parse(Buffer.from(parts[1], 'base64').toString());
+  console.log('SUPABASE KEY ROLE:', payload.role, 'iss:', payload.iss || 'supabase');
+} catch {
+  console.log('Could not decode SUPABASE key payload');
+}
 
+// Google Auth from JSON
 function parseServiceAccount() {
+  /** @type {Record<string, any>} */
   let json;
   try {
     json = JSON.parse(GOOGLE_SERVICE_ACCOUNT_JSON);
@@ -57,184 +47,196 @@ function parseServiceAccount() {
     die('Service account JSON missing client_email or private_key');
   }
   console.log('Service account:', json.client_email);
-  return new GoogleAuth({
+  return new google.auth.GoogleAuth({
     credentials: json,
-    scopes: ['https://www.googleapis.com/auth/drive.readonly']
+    scopes: ['https://www.googleapis.com/auth/drive.readonly'],
   });
 }
 
-// -------- Helpers --------
-function brandFromPath(path) {
-  const parts = path.split('/').filter(Boolean);
-  return parts.length >= 2 ? parts[1] : 'Unknown';
+// ------- Drive listing (recursive) -------
+/**
+ * Recursively list PDFs under a folder, returning array of
+ * { id, name, mimeType, size, path }
+ */
+async function listDrivePdfs(drive, folderId, prefix = '') {
+  const results = [];
+
+  // list subfolders
+  const listFolders = await drive.files.list({
+    q: `'${folderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+    fields: 'files(id,name)',
+    supportsAllDrives: true,
+    includeItemsFromAllDrives: true,
+  });
+
+  for (const folder of listFolders.data.files || []) {
+    const childPath = prefix ? `${prefix}/${folder.name}` : folder.name;
+    const children = await listDrivePdfs(drive, folder.id, childPath);
+    results.push(...children);
+  }
+
+  // list PDF files in this folder
+  let pageToken = undefined;
+  do {
+    const resp = await drive.files.list({
+      q: `'${folderId}' in parents and mimeType = 'application/pdf' and trashed = false`,
+      fields: 'nextPageToken, files(id,name,mimeType,size)',
+      pageToken,
+      supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
+    });
+    for (const f of resp.data.files || []) {
+      const path = prefix ? `${prefix}/${f.name}` : f.name;
+      results.push({
+        id: f.id,
+        name: f.name,
+        mimeType: f.mimeType || 'application/pdf',
+        size: Number(f.size || 0),
+        path,
+      });
+    }
+    pageToken = resp.data.nextPageToken || undefined;
+  } while (pageToken);
+
+  return results;
 }
-function categoryFromPath(path) {
-  const first = path.split('/').filter(Boolean)[0] || '';
-  if (/powersports/i.test(first)) return 'Powersports';
-  if (/small engines?/i.test(first)) return 'Small Engines';
-  return first || 'Uncategorized';
+
+// ------- Download one Drive file to Buffer -------
+async function downloadDriveFile(drive, fileId) {
+  const res = await drive.files.get(
+    { fileId, alt: 'media' },
+    { responseType: 'arraybuffer' }
+  );
+  return Buffer.from(res.data);
+}
+
+// ------- Upload to Supabase Storage -------
+async function uploadToStorage(buf, storagePath, contentType) {
+  // mirror path exactly in the bucket
+  const { error } = await supabase
+    .storage
+    .from(SUPABASE_BUCKET)
+    .upload(storagePath, buf, {
+      contentType: contentType || 'application/octet-stream',
+      upsert: true,
+    });
+
+  if (error) throw error;
+  return storagePath; // we mirror 1:1
+}
+
+// --- tiny label helpers (best-effort, safe to keep simple) ---
+function categoryFromPath(p) {
+  // e.g., "Powersports/Kawasaki/..." -> "Powersports"
+  return p.split('/')[0] || null;
+}
+function brandFromPath(p) {
+  // e.g., "Powersports/Kawasaki/..." -> "Kawasaki"
+  const segs = p.split('/');
+  return segs.length > 1 ? segs[1] : null;
 }
 function titleFromName(name) {
-  return name.replace(/\.[^.]+$/, '');
-}
-function md5(buffer) {
-  const wordArray = CryptoJS.lib.WordArray.create(buffer);
-  return CryptoJS.MD5(wordArray).toString();
+  return name.replace(/\.pdf$/i, '').trim();
 }
 
-async function listAllFiles(drive, folderId, prefix = '') {
-  const items = [];
-  async function walk(id, pathPrefix) {
-    let pageToken = undefined;
-    do {
-      const res = await drive.files.list({
-        q: `'${id}' in parents and trashed=false`,
-        fields: 'nextPageToken, files(id, name, mimeType)',
-        pageToken
-      });
-      pageToken = res.data.nextPageToken || undefined;
-      for (const f of res.data.files || []) {
-        const path = pathPrefix ? `${pathPrefix}/${f.name}` : f.name;
-        if (f.mimeType === 'application/vnd.google-apps.folder') {
-          await walk(f.id, path);
-        } else {
-          items.push({ id: f.id, name: f.name, mimeType: f.mimeType, path });
-        }
-      }
-    } while (pageToken);
-  }
-  await walk(folderId, prefix);
-  return items;
-}
-
-async function downloadFileBytes(drive, fileId) {
-  try {
-    const res = await drive.files.get(
-      { fileId, alt: 'media' },
-      { responseType: 'arraybuffer' }
-    );
-    return Buffer.from(new Uint8Array(res.data || []));
-  } catch (e) {
-    console.error('Download failed for fileId', fileId, e.message);
-    return null;
-  }
-}
-
-async function uploadToStorage(buffer, destinationPath, contentType) {
-  // IMPORTANT: bucket is lowercase 'manuals'
-  const { data, error } = await supabase.storage
-    .from('manuals')
-    .upload(destinationPath, buffer, { contentType, upsert: true });
-  if (error) throw error;
-  return data.path;
-}
-
-async function upsertManual(row) {
-  const { error } = await supabase
-    .from('manuals')
-    .upsert(row, { onConflict: 'drive_file_id' });
+// ------- Upsert one manual row -------
+async function upsertManualRow(row) {
+  const { error } = await supabase.from('manuals').upsert(row);
   if (error) throw error;
 }
 
-// -------- Main --------
-async function run() {
+// ------- Main -------
+async function main() {
+  console.log('SYNC BUILD tag: debug-logs-v1');
+  console.log('Env OK. Starting sync…');
+
   const auth = parseServiceAccount();
   const drive = google.drive({ version: 'v3', auth });
 
-  const start = new Date();
-  let files_scanned = 0;
-  let files_changed = 0;
-
-  console.log('Listing Drive files under root:', DRIVE_ROOT_FOLDER_ID);
-  const files = await listAllFiles(drive, DRIVE_ROOT_FOLDER_ID);
+  console.log('Listing Drive files under root:', '***');
+  const files = await listDrivePdfs(drive, GOOGLE_DRIVE_FOLDER_ID, '');
   console.log(`Found ${files.length} files (including non-PDF).`);
 
+  let uploaded = 0;
+  let skipped = 0;
+  let upserted = 0;
+
   for (const f of files) {
-    files_scanned++;
-    // Skip Google-native files
-    if ((f.mimeType || '').startsWith('application/vnd.google-apps.')) {
-      console.warn('SKIP Google-native file:', f.name, f.mimeType);
-      continue;
-    }
-
-    const buf = await downloadFileBytes(drive, f.id);
-    if (!buf || !Buffer.isBuffer(buf) || buf.length === 0) {
-      console.warn('SKIP (no bytes):', f.name, f.mimeType);
-      continue;
-    }
-
-    const sum = md5(buf);
-    const ext = mime.extension(f.mimeType) || f.name.split('.').pop() || 'bin';
-    const storagePath = f.path; // mirror Drive path
-    const category = categoryFromPath(f.path);
-    const brand = brandFromPath(f.path);
-    const title = titleFromName(f.name);
-
-    // Upload to Storage
-    let storedPath;
     try {
-      // Skip files larger than the allowed size
-    if (f.size > MAX_UPLOAD_BYTES) {
-    console.warn('SKIP (too large):', f.name, `${Math.round(f.size/1024/1024)}MB`);
-    continue;
-  }
-      console.log('STEP storage.upload ->', storagePath, f.mimeType);
-      storedPath = await uploadToStorage(
-        buf,
-        storagePath,
-        f.mimeType || mime.lookup(ext) || 'application/octet-stream'
-      );
-      console.log('OK storage.upload <-', storedPath);
-    } catch (e) {
-      console.error('STORAGE_RLS_OR_UPLOAD_ERROR:', e.message || e);
-      throw e;
-    }
+      // Size gate (skip early)
+      if (f.size > MAX_UPLOAD_BYTES) {
+        console.warn('SKIP (too large):', f.name, `${Math.round(f.size / 1024 / 1024)}MB`);
+        skipped++;
+        continue;
+      }
 
-    // Upsert row
-    try {
-      const row = {
-        category,
-        brand,
-        title,
-        source_provider: 'google_drive',
-        drive_file_id: f.id,
-        drive_path: f.path,
-        mime_type: f.mimeType,
-        checksum: sum,
-        storage_path: storedPath,
-        tags: [],
-        parsed_ok: false,
-        pages: null,
-        extracted_text: null,
-        json: {
-          category,
-          brand,
+      // Download
+      const buf = await downloadDriveFile(drive, f.id);
+
+      // If Drive didn't report size, double-check with actual buffer length
+      if (buf.length > MAX_UPLOAD_BYTES) {
+        console.warn('SKIP (too large after download):', f.name, `${Math.round(buf.length / 1024 / 1024)}MB`);
+        skipped++;
+        continue;
+      }
+
+      // Derive metadata
+      const sum = md5(buf);
+      const ext = mime.extension(f.mimeType) || f.name.split('.').pop() || '';
+      const storagePath = f.path; // mirror Drive path
+      const category = categoryFromPath(f.path);
+      const brand = brandFromPath(f.path);
+      const title = titleFromName(f.name);
+
+      // Upload to Storage
+      try {
+        console.log('STEP storage.upload ->', storagePath, f.mimeType);
+        await uploadToStorage(buf, storagePath, f.mimeType || mime.lookup(ext) || 'application/pdf');
+        console.log('OK storage.upload <-', storagePath);
+        uploaded++;
+      } catch (e) {
+        console.error('STORAGE_RLS_OR_UPLOAD_ERROR:', e.message || e);
+        throw e;
+      }
+
+      // Upsert into manuals table
+      try {
+        console.log('STEP db.upsert -> ***');
+        const row = {
+          source_provider: 'google_drive',
+          drive_file_id: f.id,
+          drive_path: f.path,
           title,
-          source: { provider: 'google_drive', fileId: f.id, path: f.path },
-          tags: [],
-          mimeType: f.mimeType,
-          pages: undefined,
-          content: { text: undefined }
-        }
-      };
-      console.log('STEP db.upsert ->', { drive_file_id: f.id, path: f.path });
-      await upsertManual(row);
-      console.log('OK db.upsert <-', f.id);
-      files_changed++;
-    } catch (e) {
-      console.error('DB_RLS_OR_UPSERT_ERROR:', e.message || e);
-      throw e;
-    }
+          brand,
+          category,
+          mime_type: f.mimeType || 'application/pdf',
+          checksum: sum,
+          storage_path: storagePath,
+          inserted_at: now(),
+          updated_at: now(),
+        };
+        await upsertManualRow(row);
+        console.log('OK db.upsert <-', f.id);
+        upserted++;
+      } catch (e) {
+        console.error('DB_RLS_OR_UPSERT_ERROR:', e.message || e);
+        throw e;
+      }
 
-    if (files_changed % 10 === 0) {
-      console.log(`Progress: ${files_changed} updated so far…`);
+    } catch (err) {
+      // keep going on next file
+      console.error('UNCAUGHT ERROR (file-level):', err.message || err);
     }
   }
 
-  console.log(`Done. Scanned ${files_scanned}, updated ${files_changed}`);
+  console.log('--- SUMMARY ---');
+  console.log('Uploaded:', uploaded);
+  console.log('Skipped (too large):', skipped);
+  console.log('Upserted rows:', upserted);
 }
 
-run().catch((e) => {
+// Run
+main().catch((e) => {
   console.error('UNCAUGHT ERROR (top-level):', e.message || e);
   process.exit(1);
 });
