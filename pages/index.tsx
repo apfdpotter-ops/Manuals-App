@@ -7,8 +7,9 @@ export default function Home() {
   useEffect(() => {
     async function fetchManuals() {
       try {
-        const res = await fetch('/api/data?ts=' + Date.now(), { cache: 'no-store' });
-        const data = await res.json();
+        // inside a React component (e.g., useEffect or an event handler)
+const res = await fetch('/api/data?ts=' + Date.now(), { cache: 'no-store' });
+const data = await res.json();
         setManuals(data);
       } catch (err) {
         console.error("Failed to fetch manuals", err);
