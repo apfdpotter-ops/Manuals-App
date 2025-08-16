@@ -1,4 +1,4 @@
-import { GoogleAuth } from '@google-cloud/auth';
+import { GoogleAuth } from 'google-auth-library';
 import { google } from '@googleapis/drive';
 import { createClient } from '@supabase/supabase-js';
 import pdf from 'pdf-parse';
