@@ -1,9 +1,10 @@
 // --- Sync Google Drive -> Supabase (Manuals) ---
+// TEMP: parsing disabled to get sync stable (we'll re-enable after files land)
+
 import { GoogleAuth } from 'google-auth-library';
-import pkg from '@googleapis/drive';
+import pkg from '@googleapis/drive';          // CJS -> ESM interop
 const { google } = pkg;
 import { createClient } from '@supabase/supabase-js';
-import pdf from 'pdf-parse';
 import CryptoJS from 'crypto-js';
 import mime from 'mime-types';
 
@@ -97,7 +98,7 @@ async function downloadFileBytes(drive, fileId) {
       { responseType: 'arraybuffer' }
     );
     // Force Node Buffer
-    return Buffer.from(new Uint8Array(res.data));
+    return Buffer.from(new Uint8Array(res.data || []));
   } catch (e) {
     console.error('Download failed for fileId', fileId, e.message);
     return null;
@@ -107,18 +108,6 @@ async function downloadFileBytes(drive, fileId) {
 function md5(buffer) {
   const wordArray = CryptoJS.lib.WordArray.create(buffer);
   return CryptoJS.MD5(wordArray).toString();
-}
-
-// ✅ Only one parsePdf now, with buffer fix
-async function parsePdf(buffer) {
-  if (!buffer || !Buffer.isBuffer(buffer) || buffer.length === 0) {
-    throw new Error('Empty or invalid buffer, skipping parse');
-  }
-  const data = await pdf({ data: buffer }).catch((err) => {
-    console.error('pdf-parse failed:', err.message);
-    return { text: '', numpages: null };
-  });
-  return { text: data.text || '', pages: data.numpages || null };
 }
 
 async function uploadToStorage(buffer, destinationPath, contentType) {
@@ -155,7 +144,7 @@ async function run() {
   for (const f of files) {
     files_scanned++;
 
-    // Skip Google-native files
+    // Skip Google-native files (Docs/Sheets/Slides) — add export later if desired
     if ((f.mimeType || '').startsWith('application/vnd.google-apps.')) {
       console.warn('Skipping Google-native file:', f.name, f.mimeType);
       continue;
@@ -184,30 +173,14 @@ async function run() {
       continue; // unchanged
     }
 
-    // Upload to Supabase Storage
+    // Upload original to Storage
     const storedPath = await uploadToStorage(
       buf,
       storagePath,
       f.mimeType || mime.lookup(ext) || 'application/octet-stream'
     );
 
-    // Parse PDF, if applicable
-    let extracted_text = null;
-    let pages = null;
-    let parsed_ok = false;
-
-    if (((f.mimeType || '').includes('pdf')) || /\.pdf$/i.test(f.name)) {
-      try {
-        const parsed = await parsePdf(buf);
-        extracted_text = parsed.text;
-        pages = parsed.pages;
-        parsed_ok = true;
-      } catch (e) {
-        parsed_ok = false;
-        console.warn('PDF parse skipped:', f.name, e.message);
-      }
-    }
-
+    // Build JSON (no parsed content yet)
     const json = {
       category,
       brand,
@@ -215,7 +188,7 @@ async function run() {
       source: { provider: 'google_drive', fileId: f.id, path: f.path },
       tags: [],
       mimeType: f.mimeType,
-      pages: pages || undefined,
+      pages: undefined,
       content: { text: undefined }
     };
 
@@ -230,9 +203,9 @@ async function run() {
       checksum: sum,
       storage_path: storedPath,
       tags: [],
-      parsed_ok,
-      pages,
-      extracted_text,
+      parsed_ok: false,
+      pages: null,
+      extracted_text: null,
       json
     });
 
