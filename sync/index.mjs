@@ -98,11 +98,24 @@ async function downloadFileBytes(drive, fileId) {
       { fileId, alt: 'media' },
       { responseType: 'arraybuffer' }
     );
-    return Buffer.from(res.data || []);
+    // Force Node Buffer
+    return Buffer.from(new Uint8Array(res.data));
   } catch (e) {
     console.error('Download failed for fileId', fileId, e.message);
     return null;
   }
+}
+
+// ✅ Always wrap in {data: buffer}
+async function parsePdf(buffer) {
+  if (!buffer || !Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new Error('Empty or invalid buffer, skipping parse');
+  }
+  const data = await pdf({ data: buffer }).catch((err) => {
+    console.error('pdf-parse failed:', err.message);
+    return { text: '', numpages: null };
+  });
+  return { text: data.text || '', pages: data.numpages || null };
 }
 
 function md5(buffer) {
