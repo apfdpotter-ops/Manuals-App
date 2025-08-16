@@ -1,9 +1,6 @@
 // --- Sync Google Drive -> Supabase (Manuals) ---
-// TEMP: parsing disabled to get sync stable (we'll re-enable after files land)
-
 import { GoogleAuth } from 'google-auth-library';
-import pkg from '@googleapis/drive';          // CJS -> ESM interop
-const { google } = pkg;
+import { drive_v3, google } from 'googleapis';   // ✅ correct import
 import { createClient } from '@supabase/supabase-js';
 import CryptoJS from 'crypto-js';
 import mime from 'mime-types';
@@ -132,7 +129,6 @@ async function upsertManual(row) {
 async function run() {
   const auth = parseServiceAccount();
   const drive = google.drive({ version: 'v3', auth });
-
   const start = new Date();
   let files_scanned = 0;
   let files_changed = 0;
