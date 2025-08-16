@@ -37,7 +37,7 @@
 <body>
   <header>
     <h1>Manuals App</h1>
-    <div>Type to search mock data (we’ll wire real docs later)</div>
+    <div>Type to search your manuals</div>
   </header>
 
   <main class="wrap">
@@ -57,14 +57,15 @@
 
   function normalize(s){ return (s||"").toLowerCase(); }
 
+  // Word-wise match (each query word must be present somewhere in the haystack)
   function matches(item, query){
     const hay = [
       item.title, item.brand, item.model, item.type, item.year,
       ...(item.tags||[])
     ].map(normalize).join(" ");
-    const q = normalize(query).trim();
-    if(!q) return true;
-    return q.split(/\s+/).every(word => hay.includes(word));
+    const terms = normalize(query).trim().split(/\s+/).filter(Boolean);
+    if(terms.length === 0) return true;
+    return terms.every(word => hay.includes(word));
   }
 
   function render(list){
@@ -78,7 +79,7 @@
       card.className = "card";
       card.innerHTML = `
         <div class="title">${it.title}</div>
-        <div class="meta">${it.brand} • ${it.model} • ${it.type} • ${it.year}</div>
+        <div class="meta">${it.brand||""} • ${it.model||""} • ${it.type||""} • ${it.year||""}</div>
         <a class="btn" href="${it.url}" target="_blank" rel="noopener">Open</a>
         <div class="tags">${(it.tags||[]).map(t=>`<span class="tag">${t}</span>`).join("")}</div>
       `;
@@ -87,18 +88,25 @@
   }
 
   async function loadData(){
+    const cacheBuster = `ts=${Date.now()}`;                   // kill CDN/browser cache
+    const path = `data.json?${cacheBuster}`;                   // same folder as this HTML
     try{
-      const res = await fetch('data.json', { cache: 'no-cache' });
+      const res = await fetch(path, { cache: 'no-store' });    // tell browser not to cache
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      // wire up search after data loads
+
       const runSearch = () => render(data.filter(it => matches(it, q.value)));
+      const runAll = () => render(data);
+
       go.addEventListener('click', runSearch);
       q.addEventListener('keydown', e => { if(e.key === 'Enter') runSearch(); });
       q.addEventListener('input', runSearch);
-      render(data); // show all to start
+
+      runAll(); // show all to start
+      console.log('✅ Loaded data.json');
     }catch(err){
-      resultsEl.innerHTML = `<div class="card empty">Couldn’t load data.json. Commit looks good? Try refreshing.</div>`;
-      console.error(err);
+      resultsEl.innerHTML = `<div class="card empty">Couldn’t load <code>data.json</code>. Make sure it’s deployed next to this HTML (or in /public). Then refresh.</div>`;
+      console.error('Failed to load data.json:', err);
     }
   }
 
