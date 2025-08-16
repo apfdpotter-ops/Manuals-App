@@ -1,15 +1,20 @@
 {
   "name": "manuals-app",
   "version": "1.0.0",
+  "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "sync": "node sync/index.mjs"
   },
   "dependencies": {
     "next": "14.2.3",
     "react": "18.2.0",
     "react-dom": "18.2.0",
-    "@supabase/supabase-js": "2.42.0"
+    "@supabase/supabase-js": "2.42.0",
+    "googleapis": "131.0.0",
+    "mime-types": "2.1.35",
+    "md5": "2.3.0"
   }
 }
