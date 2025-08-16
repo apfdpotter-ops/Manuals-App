@@ -1,10 +1,15 @@
 {
-  "type": "module",
+  "name": "manuals-app",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
   "dependencies": {
-    "google-auth-library": "^9.14.1",
-    "googleapis": "^131.0.0",
-    "@supabase/supabase-js": "^2.45.3",
-    "crypto-js": "^4.2.0",
-    "mime-types": "^2.1.35"
+    "next": "14.2.3",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "@supabase/supabase-js": "2.42.0"
   }
 }
