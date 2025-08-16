@@ -50,67 +50,59 @@
     <div id="results" class="results"></div>
   </main>
 
-  <script>
-    // --- Mock seed data so you can test the flow ---
-    const DATA = [
-      { title: "Briggs & Stratton PXI 2200 – Service Manual", brand: "Briggs & Stratton", model: "PXI 2200", type: "Service Manual", year: "2024", url: "#", tags: ["engine", "torque specs", "governor", "troubleshooting"] },
-      { title: "Kawasaki FR Series – Electrical & Ignition", brand: "Kawasaki", model: "FR651V", type: "Electrical", year: "2023", url: "#", tags: ["ignition", "wiring", "coil", "CPS"] },
-      { title: "John Deere Ztrak 52\" – Operator’s Manual", brand: "John Deere", model: "Ztrak 52", type: "Operator", year: "2022", url: "#", tags: ["mower", "deck", "belts", "maintenance"] },
-      { title: "Polaris Ranger 1000XP – Front Suspension Guide", brand: "Polaris", model: "Ranger 1000XP", type: "Chassis", year: "2024", url: "#", tags: ["alignment", "toe", "tire wear", "front right"] },
-      { title: "Honda Pioneer 700 – Engine Timing & Sensors", brand: "Honda", model: "Pioneer 700", type: "Engine", year: "2017", url: "#", tags: ["crankshaft position sensor", "CPS", "timing"] },
-      { title: "Scag SLS 52 – Fuel Delivery Troubleshooting", brand: "Scag", model: "SLS 52", type: "Fuel", year: "2024", url: "#", tags: ["filter", "pickup", "bogging", "tall grass"] },
-      { title: "Toro TimeCutter 5000 – Operator’s Manual",  brand: "Toro", model: "TimeCutter 5000", type: "Operator", year: "2021", url: "#", tags: ["mower", "deck", "safety", "maintenance"] 
-},
-    ];
+ <script>
+  const q = document.getElementById('q');
+  const go = document.getElementById('go');
+  const resultsEl = document.getElementById('results');
 
-    const q = document.getElementById('q');
-    const go = document.getElementById('go');
-    const resultsEl = document.getElementById('results');
+  function normalize(s){ return (s||"").toLowerCase(); }
 
-    function normalize(s){ return (s||"").toLowerCase(); }
+  function matches(item, query){
+    const hay = [
+      item.title, item.brand, item.model, item.type, item.year,
+      ...(item.tags||[])
+    ].map(normalize).join(" ");
+    const q = normalize(query).trim();
+    if(!q) return true;
+    return q.split(/\s+/).every(word => hay.includes(word));
+  }
 
-    function matches(item, query){
-      const hay = [
-        item.title, item.brand, item.model, item.type, item.year,
-        ...(item.tags||[])
-      ].map(normalize).join(" ");
-      const q = normalize(query).trim();
-      if(!q) return true;
-      // simple multi-word AND match
-      return q.split(/\s+/).every(word => hay.includes(word));
+  function render(list){
+    resultsEl.innerHTML = "";
+    if(list.length === 0){
+      resultsEl.innerHTML = `<div class="card empty">No results. Try "Kawasaki", "Briggs 2200", or "wiring".</div>`;
+      return;
     }
+    list.forEach(it => {
+      const card = document.createElement('div');
+      card.className = "card";
+      card.innerHTML = `
+        <div class="title">${it.title}</div>
+        <div class="meta">${it.brand} • ${it.model} • ${it.type} • ${it.year}</div>
+        <a class="btn" href="${it.url}" target="_blank" rel="noopener">Open</a>
+        <div class="tags">${(it.tags||[]).map(t=>`<span class="tag">${t}</span>`).join("")}</div>
+      `;
+      resultsEl.appendChild(card);
+    });
+  }
 
-    function render(list){
-      resultsEl.innerHTML = "";
-      if(list.length === 0){
-        resultsEl.innerHTML = `<div class="card empty">No results. Try "Kawasaki", "Briggs 2200", or "wiring".</div>`;
-        return;
-      }
-      list.forEach(it => {
-        const card = document.createElement('div');
-        card.className = "card";
-        card.innerHTML = `
-          <div class="title">${it.title}</div>
-          <div class="meta">${it.brand} • ${it.model} • ${it.type} • ${it.year}</div>
-          <a class="btn" href="${it.url}">Open (placeholder)</a>
-          <div class="tags">${(it.tags||[]).map(t=>`<span class="tag">${t}</span>`).join("")}</div>
-        `;
-        resultsEl.appendChild(card);
-      });
+  async function loadData(){
+    try{
+      const res = await fetch('data.json', { cache: 'no-cache' });
+      const data = await res.json();
+      // wire up search after data loads
+      const runSearch = () => render(data.filter(it => matches(it, q.value)));
+      go.addEventListener('click', runSearch);
+      q.addEventListener('keydown', e => { if(e.key === 'Enter') runSearch(); });
+      q.addEventListener('input', runSearch);
+      render(data); // show all to start
+    }catch(err){
+      resultsEl.innerHTML = `<div class="card empty">Couldn’t load data.json. Commit looks good? Try refreshing.</div>`;
+      console.error(err);
     }
+  }
 
-    function runSearch(){
-      const qv = q.value;
-      const filtered = DATA.filter(it => matches(it, qv));
-      render(filtered);
-    }
-
-    go.addEventListener('click', runSearch);
-    q.addEventListener('keydown', (e)=>{ if(e.key === 'Enter') runSearch(); });
-    q.addEventListener('input', runSearch);
-
-    // show all to start
-    render(DATA);
-  </script>
+  loadData();
+</script>
 </body>
 </html>
