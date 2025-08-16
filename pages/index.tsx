@@ -7,7 +7,7 @@ export default function Home() {
   useEffect(() => {
     async function fetchManuals() {
       try {
-        const res = await fetch("/api/manuals");
+        const res = await fetch('/api/data?ts=' + Date.now(), { cache: 'no-store' });
         const data = await res.json();
         setManuals(data);
       } catch (err) {
