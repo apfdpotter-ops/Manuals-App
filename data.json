@@ -26,15 +26,7 @@
     "url": "#",
     "tags": ["filter", "pickup", "bogging", "tall grass"]
   }
-    {
-    "title": "Scag SLS 52 – Fuel Delivery Troubleshooting",
-    "brand": "Scag",
-    "model": "SLS 52",
-    "type": "Fuel",
-    "year": "2024",
-    "url": "#",
-    "tags": ["filter", "pickup", "bogging", "tall grass"]
-  },
+    
   {
     "title": "Toro TimeCutter 5000 – Operator’s Manual",
     "brand": "Toro",
@@ -45,4 +37,4 @@
     "tags": ["mower", "deck", "safety", "maintenance"]
   }
 ]
-]
+
