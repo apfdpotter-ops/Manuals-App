@@ -8,7 +8,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   try {
     const r = await fetch(DATA_URL, { cache: 'no-store' });
     if (!r.ok) return res.status(r.status).json({ error: `Upstream ${r.status}` });
-
     const json = await r.json();
     res.status(200).json(json);
   } catch (e: any) {
