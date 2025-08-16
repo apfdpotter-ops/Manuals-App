@@ -16,6 +16,15 @@ const {
   DRIVE_ROOT_FOLDER_ID,
   GOOGLE_SERVICE_ACCOUNT_JSON
 } = process.env;
+function showSupabaseKeyRole(jwt) {
+  try {
+    const payload = JSON.parse(Buffer.from(jwt.split('.')[1], 'base64').toString());
+    console.log('SUPABASE KEY ROLE:', payload.role, 'iss:', payload.iss || '(n/a)');
+  } catch (e) {
+    console.log('Could not decode SUPABASE key payload');
+  }
+}
+showSupabaseKeyRole(SUPABASE_SERVICE_ROLE_KEY);
 
 function die(msg) {
   console.error('FATAL:', msg);
