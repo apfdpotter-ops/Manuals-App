@@ -1,11 +1,15 @@
+// --- Sync Google Drive -> Supabase (Manuals) ---
+// Works with: google-auth-library, @googleapis/drive, @supabase/supabase-js, pdf-parse, crypto-js, mime-types
+
 import { GoogleAuth } from 'google-auth-library';
-import pkg from '@googleapis/drive';
+import pkg from '@googleapis/drive';          // CJS -> ESM interop
 const { google } = pkg;
 import { createClient } from '@supabase/supabase-js';
 import pdf from 'pdf-parse';
 import CryptoJS from 'crypto-js';
 import mime from 'mime-types';
 
+// -------- Env checks --------
 const {
   SUPABASE_URL,
   SUPABASE_SERVICE_ROLE_KEY,
@@ -13,18 +17,40 @@ const {
   GOOGLE_SERVICE_ACCOUNT_JSON
 } = process.env;
 
+function die(msg) {
+  console.error('FATAL:', msg);
+  process.exit(1);
+}
+if (!SUPABASE_URL) die('SUPABASE_URL is missing');
+if (!SUPABASE_SERVICE_ROLE_KEY) die('SUPABASE_SERVICE_ROLE_KEY is missing');
+if (!DRIVE_ROOT_FOLDER_ID) die('DRIVE_ROOT_FOLDER_ID is missing');
+if (!GOOGLE_SERVICE_ACCOUNT_JSON) die('GOOGLE_SERVICE_ACCOUNT_JSON is missing');
+
+console.log('Env OK. Starting sync…');
+
+// -------- Clients --------
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false }
 });
 
-function parseSA() {
-  const json = JSON.parse(GOOGLE_SERVICE_ACCOUNT_JSON);
+function parseServiceAccount() {
+  let json;
+  try {
+    json = JSON.parse(GOOGLE_SERVICE_ACCOUNT_JSON);
+  } catch (e) {
+    die('GOOGLE_SERVICE_ACCOUNT_JSON is not valid JSON');
+  }
+  if (!json.client_email || !json.private_key) {
+    die('Service account JSON missing client_email or private_key');
+  }
+  console.log('Service account:', json.client_email);
   return new GoogleAuth({
     credentials: json,
     scopes: ['https://www.googleapis.com/auth/drive.readonly']
   });
 }
 
+// -------- Helpers --------
 function brandFromPath(path) {
   const parts = path.split('/').filter(Boolean);
   return parts.length >= 2 ? parts[1] : 'Unknown';
@@ -66,17 +92,16 @@ async function listAllFiles(drive, folderId, prefix = '') {
   return items;
 }
 
- async function downloadFileBytes(drive, fileId) {
+async function downloadFileBytes(drive, fileId) {
   try {
     const res = await drive.files.get(
       { fileId, alt: 'media' },
       { responseType: 'arraybuffer' }
     );
-    const buf = Buffer.from(res.data || []);
-    return buf;
+    return Buffer.from(res.data || []);
   } catch (e) {
     console.error('Download failed for fileId', fileId, e.message);
-    return null; // let caller skip it
+    return null;
   }
 }
 
@@ -86,7 +111,13 @@ function md5(buffer) {
 }
 
 async function parsePdf(buffer) {
-  const data = await pdf(buffer);
+  if (!buffer || !Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new Error('Empty or invalid buffer, skipping parse');
+  }
+  const data = await pdf(buffer).catch((err) => {
+    console.error('pdf-parse failed:', err.message);
+    return { text: '', numpages: null };
+  });
   return { text: data.text || '', pages: data.numpages || null };
 }
 
@@ -108,26 +139,37 @@ async function upsertManual(row) {
   return data.id;
 }
 
+// -------- Main --------
 async function run() {
-  const auth = parseSA();
+  const auth = parseServiceAccount();
   const drive = google.drive({ version: 'v3', auth });
 
   const start = new Date();
   let files_scanned = 0;
   let files_changed = 0;
 
+  console.log('Listing Drive files under root:', DRIVE_ROOT_FOLDER_ID);
   const files = await listAllFiles(drive, DRIVE_ROOT_FOLDER_ID);
+  console.log(`Found ${files.length} files (including non-PDF).`);
+
   for (const f of files) {
     files_scanned++;
 
+    // Skip Google-native files (Docs/Sheets/Slides) — we can add export later
+    if ((f.mimeType || '').startsWith('application/vnd.google-apps.')) {
+      console.warn('Skipping Google-native file:', f.name, f.mimeType);
+      continue;
+    }
+
     const buf = await downloadFileBytes(drive, f.id);
     if (!buf || !Buffer.isBuffer(buf) || buf.length === 0) {
-    console.warn('Skipping (no bytes):', f.name, f.mimeType);
-    continue;
+      console.warn('Skipping file (no bytes):', f.name, f.mimeType);
+      continue;
     }
+
     const sum = md5(buf);
     const ext = mime.extension(f.mimeType) || f.name.split('.').pop() || 'bin';
-    const storagePath = f.path;
+    const storagePath = f.path; // mirror Drive path
     const category = categoryFromPath(f.path);
     const brand = brandFromPath(f.path);
     const title = titleFromName(f.name);
@@ -139,29 +181,33 @@ async function run() {
       .maybeSingle();
 
     if (existing.data && existing.data.checksum === sum) {
-      continue; // unchanged
+      // unchanged
+      continue;
     }
 
+    // Upload original to Storage
     const storedPath = await uploadToStorage(
       buf,
       storagePath,
       f.mimeType || mime.lookup(ext) || 'application/octet-stream'
     );
 
+    // Try PDF parse if it's a PDF
     let extracted_text = null;
     let pages = null;
     let parsed_ok = false;
 
     if (((f.mimeType || '').includes('pdf')) || /\.pdf$/i.test(f.name)) {
-       try {
-         const parsed = await parsePdf(buf);
-         extracted_text = parsed.text;
-         pages = parsed.pages;
-         parsed_ok = true;
-       } catch {
-         parsed_ok = false;
-       }
-     }
+      try {
+        const parsed = await parsePdf(buf);
+        extracted_text = parsed.text;
+        pages = parsed.pages;
+        parsed_ok = true;
+      } catch (e) {
+        parsed_ok = false;
+        console.warn('PDF parse skipped:', f.name, e.message);
+      }
+    }
 
     const json = {
       category,
@@ -171,7 +217,7 @@ async function run() {
       tags: [],
       mimeType: f.mimeType,
       pages: pages || undefined,
-      content: { text: undefined }
+      content: { text: undefined } // keep heavy text in column, not JSON
     };
 
     await upsertManual({
@@ -192,6 +238,9 @@ async function run() {
     });
 
     files_changed++;
+    if (files_changed % 10 === 0) {
+      console.log(`Progress: ${files_changed} updated so far…`);
+    }
   }
 
   await supabase.from('sync_log').insert({
@@ -202,11 +251,11 @@ async function run() {
     notes: 'cron run'
   });
 
-  console.log(`Scanned ${files_scanned}, updated ${files_changed}`);
+  console.log(`Done. Scanned ${files_scanned}, updated ${files_changed}`);
 }
 
 run().catch(async (e) => {
-  console.error(e);
+  console.error('UNCAUGHT ERROR:', e.message);
   try {
     await supabase.from('sync_log').insert({
       started_at: new Date().toISOString(),
