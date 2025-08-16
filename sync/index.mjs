@@ -1,8 +1,6 @@
 // --- Sync Google Drive -> Supabase (Manuals) ---
-// Works with: google-auth-library, @googleapis/drive, @supabase/supabase-js, pdf-parse, crypto-js, mime-types
-
 import { GoogleAuth } from 'google-auth-library';
-import pkg from '@googleapis/drive';          // CJS -> ESM interop
+import pkg from '@googleapis/drive';
 const { google } = pkg;
 import { createClient } from '@supabase/supabase-js';
 import pdf from 'pdf-parse';
@@ -106,24 +104,12 @@ async function downloadFileBytes(drive, fileId) {
   }
 }
 
-// ✅ Always wrap in {data: buffer}
-async function parsePdf(buffer) {
-  if (!buffer || !Buffer.isBuffer(buffer) || buffer.length === 0) {
-    throw new Error('Empty or invalid buffer, skipping parse');
-  }
-  const data = await pdf({ data: buffer }).catch((err) => {
-    console.error('pdf-parse failed:', err.message);
-    return { text: '', numpages: null };
-  });
-  return { text: data.text || '', pages: data.numpages || null };
-}
-
 function md5(buffer) {
   const wordArray = CryptoJS.lib.WordArray.create(buffer);
   return CryptoJS.MD5(wordArray).toString();
 }
 
-// ✅ Force pdf-parse to consume our Buffer (prevents fallback to ./test/data/…)
+// ✅ Only one parsePdf now, with buffer fix
 async function parsePdf(buffer) {
   if (!buffer || !Buffer.isBuffer(buffer) || buffer.length === 0) {
     throw new Error('Empty or invalid buffer, skipping parse');
@@ -169,7 +155,7 @@ async function run() {
   for (const f of files) {
     files_scanned++;
 
-    // Skip Google-native files (Docs/Sheets/Slides) — export support can be added later
+    // Skip Google-native files
     if ((f.mimeType || '').startsWith('application/vnd.google-apps.')) {
       console.warn('Skipping Google-native file:', f.name, f.mimeType);
       continue;
@@ -198,7 +184,7 @@ async function run() {
       continue; // unchanged
     }
 
-    // Upload original to Storage
+    // Upload to Supabase Storage
     const storedPath = await uploadToStorage(
       buf,
       storagePath,
@@ -230,7 +216,7 @@ async function run() {
       tags: [],
       mimeType: f.mimeType,
       pages: pages || undefined,
-      content: { text: undefined } // keep heavy text in column, not JSON
+      content: { text: undefined }
     };
 
     await upsertManual({
