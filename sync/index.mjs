@@ -173,6 +173,11 @@ async function run() {
     // Upload to Storage
     let storedPath;
     try {
+      // Skip files larger than the allowed size
+    if (f.size > MAX_UPLOAD_BYTES) {
+    console.warn('SKIP (too large):', f.name, `${Math.round(f.size/1024/1024)}MB`);
+    continue;
+  }
       console.log('STEP storage.upload ->', storagePath, f.mimeType);
       storedPath = await uploadToStorage(
         buf,
