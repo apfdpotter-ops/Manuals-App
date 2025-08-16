@@ -1,24 +1,28 @@
 name: Sync Manuals from Google Drive
 
 on:
-  schedule:
-    - cron: "*/30 * * * *"   # every 30 minutes
-  workflow_dispatch: {}       # lets you run it manually
+  # cron: '*/30 * * * *'   # every 30 minutes (uncomment if you want)
+  workflow_dispatch: {}    # lets you run it manually
 
 jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+
       - name: Install deps
         run: npm i
+
       - name: Run sync
         run: node sync/index.mjs
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          DRIVE_ROOT_FOLDER_ID: ${{ secrets.DRIVE_ROOT_FOLDER_ID }}
           GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_DRIVE_FOLDER_ID: ${{ secrets.GOOGLE_DRIVE_FOLDER_ID }}
+          # optional: raise/lower max upload size (bytes). Default in code is 50MB.
+          # MAX_UPLOAD_BYTES: '104857600'  # 100 MB
