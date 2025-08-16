@@ -110,11 +110,12 @@ function md5(buffer) {
   return CryptoJS.MD5(wordArray).toString();
 }
 
+// ✅ Force pdf-parse to consume our Buffer (prevents fallback to ./test/data/…)
 async function parsePdf(buffer) {
   if (!buffer || !Buffer.isBuffer(buffer) || buffer.length === 0) {
     throw new Error('Empty or invalid buffer, skipping parse');
   }
-  const data = await pdf(buffer).catch((err) => {
+  const data = await pdf({ data: buffer }).catch((err) => {
     console.error('pdf-parse failed:', err.message);
     return { text: '', numpages: null };
   });
@@ -155,7 +156,7 @@ async function run() {
   for (const f of files) {
     files_scanned++;
 
-    // Skip Google-native files (Docs/Sheets/Slides) — we can add export later
+    // Skip Google-native files (Docs/Sheets/Slides) — export support can be added later
     if ((f.mimeType || '').startsWith('application/vnd.google-apps.')) {
       console.warn('Skipping Google-native file:', f.name, f.mimeType);
       continue;
@@ -181,8 +182,7 @@ async function run() {
       .maybeSingle();
 
     if (existing.data && existing.data.checksum === sum) {
-      // unchanged
-      continue;
+      continue; // unchanged
     }
 
     // Upload original to Storage
@@ -192,7 +192,7 @@ async function run() {
       f.mimeType || mime.lookup(ext) || 'application/octet-stream'
     );
 
-    // Try PDF parse if it's a PDF
+    // Parse PDF, if applicable
     let extracted_text = null;
     let pages = null;
     let parsed_ok = false;
