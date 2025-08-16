@@ -1,0 +1,29 @@
+[
+  {
+    "title": "Briggs & Stratton PXI 2200 – Service Manual",
+    "brand": "Briggs & Stratton",
+    "model": "PXI 2200",
+    "type": "Service Manual",
+    "year": "2024",
+    "url": "#",
+    "tags": ["engine", "torque specs", "governor", "troubleshooting"]
+  },
+  {
+    "title": "Kawasaki FR Series – Electrical & Ignition",
+    "brand": "Kawasaki",
+    "model": "FR651V",
+    "type": "Electrical",
+    "year": "2023",
+    "url": "#",
+    "tags": ["ignition", "wiring", "coil", "CPS"]
+  },
+  {
+    "title": "Scag SLS 52 – Fuel Delivery Troubleshooting",
+    "brand": "Scag",
+    "model": "SLS 52",
+    "type": "Fuel",
+    "year": "2024",
+    "url": "#",
+    "tags": ["filter", "pickup", "bogging", "tall grass"]
+  }
+]
