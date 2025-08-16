@@ -57,7 +57,6 @@
 
   function normalize(s){ return (s||"").toLowerCase(); }
 
-  // Word-wise match (each query word must be present somewhere in the haystack)
   function matches(item, query){
     const hay = [
       item.title, item.brand, item.model, item.type, item.year,
@@ -88,27 +87,26 @@
   }
 
   async function loadData(){
-  try {
-    // call your Vercel serverless function
-    const res = await fetch('/api/data?ts=' + Date.now(), { cache: 'no-store' });
-    if(!res.ok) throw new Error(`HTTP ${res.status}`);
+    try {
+      // Fetch from your serverless API route (points to GitHub Raw via DATA_URL)
+      const res = await fetch('/api/data?ts=' + Date.now(), { cache: 'no-store' });
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
 
-    const data = await res.json();
+      const data = await res.json();
 
-    const runSearch = () => render(data.filter(it => matches(it, q.value)));
-    const runAll = () => render(data);
+      const runSearch = () => render(data.filter(it => matches(it, q.value)));
+      const runAll = () => render(data);
 
-    go.addEventListener('click', runSearch);
-    q.addEventListener('keydown', e => { if(e.key === 'Enter') runSearch(); });
-    q.addEventListener('input', runSearch);
+      go.addEventListener('click', runSearch);
+      q.addEventListener('keydown', e => { if(e.key === 'Enter') runSearch(); });
+      q.addEventListener('input', runSearch);
 
-    runAll(); // show all to start
-    console.log('✅ Loaded live data');
-  } catch(err) {
-    resultsEl.innerHTML = `<div class="card empty">Couldn’t load data. Check API route.</div>`;
-    console.error('Failed to load data:', err);
-  }
-}
+      runAll(); // show all to start
+      console.log('✅ Loaded live data');
+    } catch(err) {
+      resultsEl.innerHTML = `<div class="card empty">Couldn’t load data. Check API route.</div>`;
+      console.error('Failed to load data:', err);
+    }
   }
 
   loadData();
