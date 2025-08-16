@@ -15,6 +15,10 @@ const {
   SUPABASE_SERVICE_ROLE_KEY,
   DRIVE_ROOT_FOLDER_ID,
   GOOGLE_SERVICE_ACCOUNT_JSON
+  const MAX_UPLOAD_BYTES = parseInt(
+  process.env.MAX_UPLOAD_BYTES || '52428800', // 50MB default
+  10
+);
 } = process.env;
 function showSupabaseKeyRole(jwt) {
   try {
