@@ -1,9 +1,13 @@
 // --- Sync Google Drive -> Supabase (Manuals) ---
+// Parsing disabled for now; we mirror files + upsert rows with debug logs.
+
 import { GoogleAuth } from 'google-auth-library';
-import { drive_v3, google } from 'googleapis';   // ✅ correct import
+import { google } from 'googleapis';
 import { createClient } from '@supabase/supabase-js';
 import CryptoJS from 'crypto-js';
 import mime from 'mime-types';
+
+console.log('SYNC BUILD tag: debug-logs-v1');
 
 // -------- Env checks --------
 const {
@@ -51,16 +55,18 @@ function brandFromPath(path) {
   const parts = path.split('/').filter(Boolean);
   return parts.length >= 2 ? parts[1] : 'Unknown';
 }
-
 function categoryFromPath(path) {
   const first = path.split('/').filter(Boolean)[0] || '';
   if (/powersports/i.test(first)) return 'Powersports';
   if (/small engines?/i.test(first)) return 'Small Engines';
   return first || 'Uncategorized';
 }
-
 function titleFromName(name) {
   return name.replace(/\.[^.]+$/, '');
+}
+function md5(buffer) {
+  const wordArray = CryptoJS.lib.WordArray.create(buffer);
+  return CryptoJS.MD5(wordArray).toString();
 }
 
 async function listAllFiles(drive, folderId, prefix = '') {
@@ -94,7 +100,6 @@ async function downloadFileBytes(drive, fileId) {
       { fileId, alt: 'media' },
       { responseType: 'arraybuffer' }
     );
-    // Force Node Buffer
     return Buffer.from(new Uint8Array(res.data || []));
   } catch (e) {
     console.error('Download failed for fileId', fileId, e.message);
@@ -102,12 +107,8 @@ async function downloadFileBytes(drive, fileId) {
   }
 }
 
-function md5(buffer) {
-  const wordArray = CryptoJS.lib.WordArray.create(buffer);
-  return CryptoJS.MD5(wordArray).toString();
-}
-
 async function uploadToStorage(buffer, destinationPath, contentType) {
+  // IMPORTANT: bucket is lowercase 'manuals'
   const { data, error } = await supabase.storage
     .from('manuals')
     .upload(destinationPath, buffer, { contentType, upsert: true });
@@ -116,19 +117,17 @@ async function uploadToStorage(buffer, destinationPath, contentType) {
 }
 
 async function upsertManual(row) {
-  const { data, error } = await supabase
+  const { error } = await supabase
     .from('manuals')
-    .upsert(row, { onConflict: 'drive_file_id' })
-    .select('id')
-    .single();
+    .upsert(row, { onConflict: 'drive_file_id' });
   if (error) throw error;
-  return data.id;
 }
 
 // -------- Main --------
 async function run() {
   const auth = parseServiceAccount();
   const drive = google.drive({ version: 'v3', auth });
+
   const start = new Date();
   let files_scanned = 0;
   let files_changed = 0;
@@ -139,16 +138,15 @@ async function run() {
 
   for (const f of files) {
     files_scanned++;
-
-    // Skip Google-native files (Docs/Sheets/Slides) — add export later if desired
+    // Skip Google-native files
     if ((f.mimeType || '').startsWith('application/vnd.google-apps.')) {
-      console.warn('Skipping Google-native file:', f.name, f.mimeType);
+      console.warn('SKIP Google-native file:', f.name, f.mimeType);
       continue;
     }
 
     const buf = await downloadFileBytes(drive, f.id);
     if (!buf || !Buffer.isBuffer(buf) || buf.length === 0) {
-      console.warn('Skipping file (no bytes):', f.name, f.mimeType);
+      console.warn('SKIP (no bytes):', f.name, f.mimeType);
       continue;
     }
 
@@ -159,77 +157,66 @@ async function run() {
     const brand = brandFromPath(f.path);
     const title = titleFromName(f.name);
 
-    const existing = await supabase
-      .from('manuals')
-      .select('id, checksum')
-      .eq('drive_file_id', f.id)
-      .maybeSingle();
-
-    if (existing.data && existing.data.checksum === sum) {
-      continue; // unchanged
+    // Upload to Storage
+    let storedPath;
+    try {
+      console.log('STEP storage.upload ->', storagePath, f.mimeType);
+      storedPath = await uploadToStorage(
+        buf,
+        storagePath,
+        f.mimeType || mime.lookup(ext) || 'application/octet-stream'
+      );
+      console.log('OK storage.upload <-', storedPath);
+    } catch (e) {
+      console.error('STORAGE_RLS_OR_UPLOAD_ERROR:', e.message || e);
+      throw e;
     }
 
-    // Upload original to Storage
-    const storedPath = await uploadToStorage(
-      buf,
-      storagePath,
-      f.mimeType || mime.lookup(ext) || 'application/octet-stream'
-    );
+    // Upsert row
+    try {
+      const row = {
+        category,
+        brand,
+        title,
+        source_provider: 'google_drive',
+        drive_file_id: f.id,
+        drive_path: f.path,
+        mime_type: f.mimeType,
+        checksum: sum,
+        storage_path: storedPath,
+        tags: [],
+        parsed_ok: false,
+        pages: null,
+        extracted_text: null,
+        json: {
+          category,
+          brand,
+          title,
+          source: { provider: 'google_drive', fileId: f.id, path: f.path },
+          tags: [],
+          mimeType: f.mimeType,
+          pages: undefined,
+          content: { text: undefined }
+        }
+      };
+      console.log('STEP db.upsert ->', { drive_file_id: f.id, path: f.path });
+      await upsertManual(row);
+      console.log('OK db.upsert <-', f.id);
+      files_changed++;
+    } catch (e) {
+      console.error('DB_RLS_OR_UPSERT_ERROR:', e.message || e);
+      throw e;
+    }
 
-    // Build JSON (no parsed content yet)
-    const json = {
-      category,
-      brand,
-      title,
-      source: { provider: 'google_drive', fileId: f.id, path: f.path },
-      tags: [],
-      mimeType: f.mimeType,
-      pages: undefined,
-      content: { text: undefined }
-    };
-
-    await upsertManual({
-      category,
-      brand,
-      title,
-      source_provider: 'google_drive',
-      drive_file_id: f.id,
-      drive_path: f.path,
-      mime_type: f.mimeType,
-      checksum: sum,
-      storage_path: storedPath,
-      tags: [],
-      parsed_ok: false,
-      pages: null,
-      extracted_text: null,
-      json
-    });
-
-    files_changed++;
     if (files_changed % 10 === 0) {
       console.log(`Progress: ${files_changed} updated so far…`);
     }
   }
 
-  await supabase.from('sync_log').insert({
-    started_at: start.toISOString(),
-    finished_at: new Date().toISOString(),
-    files_scanned,
-    files_changed,
-    notes: 'cron run'
-  });
-
   console.log(`Done. Scanned ${files_scanned}, updated ${files_changed}`);
 }
 
-run().catch(async (e) => {
-  console.error('UNCAUGHT ERROR:', e.message);
-  try {
-    await supabase.from('sync_log').insert({
-      started_at: new Date().toISOString(),
-      finished_at: new Date().toISOString(),
-      notes: `error: ${e.message}`
-    });
-  } catch {}
+run().catch((e) => {
+  console.error('UNCAUGHT ERROR (top-level):', e.message || e);
   process.exit(1);
 });
