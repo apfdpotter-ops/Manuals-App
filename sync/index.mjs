@@ -1,5 +1,6 @@
 import { GoogleAuth } from 'google-auth-library';
-import { google } from '@googleapis/drive';
+import pkg from '@googleapis/drive';
+const { google } = pkg;
 import { createClient } from '@supabase/supabase-js';
 import pdf from 'pdf-parse';
 import CryptoJS from 'crypto-js';
