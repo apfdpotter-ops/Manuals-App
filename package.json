@@ -1,0 +1,11 @@
+{
+  "type": "module",
+  "dependencies": {
+    "@google-cloud/auth": "^9.14.1",
+    "@googleapis/drive": "^5.0.0",
+    "@supabase/supabase-js": "^2.45.3",
+    "pdf-parse": "^1.1.1",
+    "crypto-js": "^4.2.0",
+    "mime-types": "^2.1.35"
+  }
+}
